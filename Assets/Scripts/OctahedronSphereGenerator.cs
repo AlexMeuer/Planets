@@ -1,6 +1,28 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
+
+public class MeshData
+{
+    public readonly string Name;
+    public Vector3[] Vertices;
+    public Vector3[] Normals;
+    public Vector2[] UV;
+    public int[] Triangles;
+
+    public MeshData(string name)
+    {
+        Name = name;
+    }
+
+    public Mesh Bake() => new Mesh
+    {
+        name = Name,
+        vertices = Vertices,
+        normals = Normals,
+        uv = UV,
+        triangles = Triangles
+    };
+}
 
 public static class OctahedronSphereGenerator
 {
@@ -15,7 +37,7 @@ public static class OctahedronSphereGenerator
     private const int MinSubdivisions = 0;
     private const int MaxSubdivisions = 6;
 
-    public static Mesh Generate(int subdivisions, float radius)
+    public static MeshData Generate(int subdivisions, float radius)
     {
         if (subdivisions < MinSubdivisions)
         {
@@ -30,29 +52,23 @@ public static class OctahedronSphereGenerator
         }
 
         var resolution = 1 << subdivisions;
+        var data = new MeshData($"Octahedron Sphere §{subdivisions}")
+        {
+            Vertices = new Vector3[(resolution + 1) * (resolution + 1) * 4 - (resolution * 2 - 1) * 3],
+            Triangles = new int[(1 << (subdivisions * 2 + 3)) * 3]
+        };
 
-        var vertices = new Vector3[(resolution + 1) * (resolution + 1) * 4 - (resolution * 2 - 1) * 3];
-
-        var triangles = new int[(1 << (subdivisions * 2 + 3)) * 3];
-
-        GenerateOctahedron(vertices, triangles, resolution);
-        Normalize(vertices, out var normals);
-        CreateUV(vertices, out var uv);
+        GenerateOctahedron(data.Vertices, data.Triangles, resolution);
+        Normalize(data.Vertices, out data.Normals);
+        CreateUV(data.Vertices, out data.UV);
  
         if (Math.Abs(radius - 1f) > float.Epsilon) {
-            for (var i = 0; i < vertices.Length; i++) {
-                vertices[i] *= radius;
+            for (var i = 0; i < data.Vertices.Length; i++) {
+                data.Vertices[i] *= radius;
             }
         }
- 
-        return new Mesh
-        {
-            name = "Octahedron Sphere",
-            vertices = vertices,
-            normals = normals,
-            uv = uv,
-            triangles = triangles
-        };
+
+        return data;
     }
 
     private static void GenerateOctahedron(Vector3[] vertices, int[] triangles, int resolution)
