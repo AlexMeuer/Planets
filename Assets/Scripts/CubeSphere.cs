@@ -208,7 +208,7 @@ public class CubeSphere : MonoBehaviour {
         gameObject.AddComponent<SphereCollider>();
     }
 
-    private void OnDrawGizmos () {
+    private void OnDrawGizmosSelected() {
         if (_vertices == null) {
             return;
         }
