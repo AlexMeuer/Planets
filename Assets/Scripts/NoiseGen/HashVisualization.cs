@@ -60,7 +60,7 @@ namespace NoiseGen
         private Mesh instanceMesh;
 
         [SerializeField, Range(0.1f, 10f)]
-        private float _instanceScale = 2f;
+        private float instanceScale = 2f;
 
         [SerializeField]
         private Material material;
@@ -105,7 +105,7 @@ namespace NoiseGen
 
             _propertyBlock ??= new MaterialPropertyBlock();
             _propertyBlock.SetBuffer(HashesId, _hashesBuffer);
-            _propertyBlock.SetVector(ConfigId, new Vector4(resolution, _instanceScale / resolution,  displacement));
+            _propertyBlock.SetVector(ConfigId, new Vector4(resolution, instanceScale / resolution,  displacement));
             _propertyBlock.SetBuffer(PositionsId, _positionsBuffer);
             _propertyBlock.SetBuffer(NormalsId, _normalsBuffer);
         }
