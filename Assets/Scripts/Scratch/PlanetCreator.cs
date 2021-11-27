@@ -1,3 +1,4 @@
+using Scratch.Settings;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -5,6 +6,8 @@ using Unity.Mathematics;
 using UnityEngine;
 
 using static Unity.Mathematics.math;
+using float2x4 = Unity.Mathematics.float2x4;
+using float4 = Unity.Mathematics.float4;
 
 namespace Scratch
 {
@@ -126,12 +129,9 @@ namespace Scratch
         {
             public NativeArray<float3> Vertices;
 
-            [WriteOnly]
-            public NativeArray<float3> Normals;
-
             public void Execute(int i)
             {
-                Normals[i] = Vertices[i] = normalize(Vertices[i]);
+                Vertices[i] = normalize(Vertices[i]);
             }
         }
 
@@ -183,44 +183,157 @@ namespace Scratch
         }
 
         [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = true)]
-        private struct TangentCreationJob : IJob
+        private struct HeightJob : IJobFor
         {
+
             public NativeArray<float3> Vertices;
+            public float Radius;
+            public float Seed;
+            public float Scale;
 
-            [WriteOnly]
-            public NativeArray<float4> Tangents;
-
-            public void Execute()
+            public void Execute(int i)
             {
-                var len = Vertices.Length;
-                for (var i = 0; i < len; i++)
-                {
-                    var v = Vertices[i];
-                    v.y = 0f;
-                    v = normalize(v);
-                    Tangents[i] = new float4(-v.z, 0f, v.x, -1f);
-                }
+                var noiseSum = 0f;
+                var amplitude = Scale;
+                var frequency = 1f;
 
-                Tangents[len - 4] = Tangents[0] = float4(normalize(float3(-1f, 0, -1f)), -1f);
-                Tangents[len - 3] = Tangents[1] = float4(normalize(float3(1f, 0f, -1f)), -1f);
-                Tangents[len - 2] = Tangents[2] = float4(normalize(float3(1f, 0f, 1f)), -1f);
-                Tangents[len - 1] = Tangents[3] = float4(normalize(float3(-1f, 0f, 1f)), -1f);
+                var v = Vertices[i];
+                for (var k = 0; k < 5; k++)
+                {
+                    // Sample noise function and add to the result
+                    noiseSum += noise.snoise(float4(v * frequency, Seed)) * amplitude;
+                    // Make each layer more and more detailed
+                    frequency *= 2;
+                    // Make each layer contribute less and less to result
+                    amplitude *= 0.5f;
+                }
+                Vertices[i] *= Radius - 0.5f + noiseSum;
             }
         }
 
         [BurstCompile(FloatPrecision.Standard, FloatMode.Fast, CompileSynchronously = true)]
-        private struct ScaleJob : IJobFor
+        private struct RockyPlanetHeightJob : IJobFor
         {
             public NativeArray<float3> Vertices;
             public float Radius;
 
+            // Continent settings
+            public float OceanFloorDepth;
+            public float OceanDepthMultiplier;
+            public float OceanFloorSmoothing;
+            public float MountainBlend;
+
+            public float4x3 NoiseParamsContinents;
+            public float4x3 NoiseParamsMask;
+            public float4x3 NoiseParamsMountains;
+
             public void Execute(int i)
             {
-                Vertices[i] *= Radius;
+                var v = Vertices[i];
+
+                var continentShape = FractalNoise(v, NoiseParamsContinents);
+
+                continentShape = SmoothMax(continentShape, -OceanFloorDepth, OceanFloorSmoothing);
+
+                if (continentShape < 0)
+                {
+                    continentShape *= 1 + OceanDepthMultiplier;
+                }
+
+                var ridgeNoise = SmoothedRidgidNoise(v, NoiseParamsMountains);
+
+                var mask = Blend(0, MountainBlend, FractalNoise(v, NoiseParamsMask));
+                // Calculate final height
+                var finalHeight = 1 + continentShape * 0.01f + ridgeNoise * 0.01f * mask;
+
+                Vertices[i] = v * (Radius + finalHeight);
+            }
+
+            private static float FractalNoise(float3 pos, float4x3 param)
+            {
+                // Extract parameters for readability
+                var offset = param[0].xyz;
+                var numLayers = (int)param[0].w;
+                var persistence = param[1].x;
+                var lacunarity = param[1].y;
+                var scale = param[1].z;
+                var multiplier = param[1].w;
+                var verticalShift = param[2].x;
+
+                // Sum up noise layers
+                float noiseSum = 0;
+                float amplitude = 1;
+                var frequency = scale;
+                for (var i = 0; i < numLayers; i ++) {
+                    noiseSum += noise.snoise(pos * frequency + offset) * amplitude;
+                    amplitude *= persistence;
+                    frequency *= lacunarity;
+                }
+                return noiseSum * multiplier + verticalShift;
+            }
+
+            private static float RidgidNoise(float3 pos, float4x3 param) {
+                // Extract parameters for readability
+                var offset = param[0].xyz;
+                var numLayers = (int)param[0].w;
+                var persistence = param[1].x;
+                var lacunarity = param[1].y;
+                var scale = param[1].z;
+                var multiplier = param[1].w;
+                var power = param[2].x;
+                var gain = param[2].y;
+                var verticalShift = param[2].z;
+
+                // Sum up noise layers
+                float noiseSum = 0;
+                float amplitude = 1;
+                var frequency = scale;
+                float ridgeWeight = 1;
+
+                for (var i = 0; i < numLayers; i ++) {
+                    var noiseVal = 1 - abs(noise.snoise(pos * frequency + offset));
+                    noiseVal = pow(abs(noiseVal), power);
+                    noiseVal *= ridgeWeight;
+                    ridgeWeight = saturate(noiseVal * gain);
+
+                    noiseSum += noiseVal * amplitude;
+                    amplitude *= persistence;
+                    frequency *= lacunarity;
+                }
+                return noiseSum * multiplier + verticalShift;
+            }
+
+            // Sample the noise several times at small offsets from the centre and average the result
+            // This reduces some of the harsh jaggedness that can occur
+            private static float SmoothedRidgidNoise(float3 pos, float4x3 param) {
+                var sphereNormal = normalize(pos);
+                var axisA = cross(sphereNormal, float3(0f,1f,0f));
+                var axisB = cross(sphereNormal, axisA);
+
+                var offsetDst = param[2].w * 0.01f;
+                var sample0 = RidgidNoise(pos, param);
+                var sample1 = RidgidNoise(pos - axisA * offsetDst, param);
+                var sample2 = RidgidNoise(pos + axisA * offsetDst, param);
+                var sample3 = RidgidNoise(pos - axisB * offsetDst, param);
+                var sample4 = RidgidNoise(pos + axisB * offsetDst, param);
+                return (sample0 + sample1 + sample2 + sample3 + sample4) / 5;
+            }
+
+            private static float Blend(float startHeight, float blendDst, float height)
+            {
+                return smoothstep(startHeight - blendDst / 2, startHeight + blendDst / 2, height);
+            }
+
+            // Smooth maximum of two values, controlled by smoothing factor k
+            // When k = 0, this behaves identically to max(a, b)
+            private static float SmoothMax(float a, float b, float k) {
+                k = min(0, -k);
+                var h = max(0, min(1, (b - a + k) / (2 * k)));
+                return a * h + b * (1 - h) - k * h * (1 - h);
             }
         }
 
-        public static Mesh Create(int subdivisions, float radius)
+        public static Mesh Create(int subdivisions, float radius, FractalNoiseSettings continents, RidgeNoiseSettings mountains, FractalNoiseSettings mask)
         {
             if (subdivisions < 0) {
                 subdivisions = 0;
@@ -235,24 +348,21 @@ namespace Scratch
             var numVerts = (resolution + 1) * (resolution + 1) * 4 - (resolution * 2 - 1) * 3;
             using var vertices = new NativeArray<float3>(numVerts, Allocator.TempJob);
             using var triangles = new NativeArray<int>((1 << (subdivisions * 2 + 3)) * 3, Allocator.TempJob);
-            using var normals = new NativeArray<float3>(numVerts, Allocator.TempJob);
             using var uv = new NativeArray<float2>(numVerts, Allocator.TempJob);
-            using var tangents = new NativeArray<float4>(numVerts, Allocator.TempJob);
 
             var handle = new VertAndTriCreationJob
             {
                 Vertices = vertices,
                 Triangles = triangles,
                 Resolution = resolution,
-
             }.Schedule();
 
 
             handle = new NormalizationJob
             {
                 Vertices = vertices,
-                Normals = normals,
             }.ScheduleParallel(numVerts, resolution, handle);
+
 
             handle = new UVCreationJob
             {
@@ -260,32 +370,41 @@ namespace Scratch
                 UV = uv,
             }.Schedule(handle);
 
-            handle = new TangentCreationJob
+            // handle = new HeightJob
+            // {
+            //     Vertices = vertices,
+            //     Radius = radius,
+            //     Seed = seed,
+            //     Scale = noiseScale,
+            // }.ScheduleParallel(numVerts, resolution, handle);
+
+            handle = new RockyPlanetHeightJob
             {
                 Vertices = vertices,
-                Tangents = tangents,
-            }.Schedule(handle);
-
-            if (Mathf.Abs(radius - 1f) > float.Epsilon)
-            {
-                handle = new ScaleJob
-                {
-                    Vertices = vertices,
-                    Radius = radius,
-                }.ScheduleParallel(numVerts, resolution, handle);
-            }
+                Radius = radius,
+                OceanFloorDepth = 1.5f,
+                OceanDepthMultiplier = 5,
+                OceanFloorSmoothing = 0.5f,
+                MountainBlend = 1.2f,
+                NoiseParamsContinents = (float4x3) continents,
+                NoiseParamsMask = (float4x3) mask,
+                NoiseParamsMountains = (float4x3) mountains,
+            }.ScheduleParallel(numVerts, resolution, handle);
 
             handle.Complete();
 
-            return new Mesh
+            var mesh = new Mesh
             {
                 name = "Planet",
                 vertices = vertices.Reinterpret<Vector3>().ToArray(),
-                normals = normals.Reinterpret<Vector3>().ToArray(),
                 uv = uv.Reinterpret<Vector2>().ToArray(),
-                tangents = tangents.Reinterpret<Vector4>().ToArray(),
                 triangles = triangles.ToArray(),
+                normals = new Vector3[numVerts],
+                tangents = new Vector4[numVerts],
             };
+            mesh.RecalculateNormals();
+            mesh.RecalculateTangents();
+            return mesh;
         }
     }
 }
